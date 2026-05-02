@@ -10,7 +10,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/brianmonteiro54/deploy-auth-service.git
+    repoURL: https://github.com/rgmarciosantos/deploy-auth-service.git
     targetRevision: main
     path: manifests
   destination:

@@ -28,7 +28,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/brianmonteiro54/deploy-monitoring-gitops.git
+    repoURL: https://github.com/rgmarciosantos/deploy-monitoring-gitops.git
     targetRevision: main
     path: apps
     directory:
