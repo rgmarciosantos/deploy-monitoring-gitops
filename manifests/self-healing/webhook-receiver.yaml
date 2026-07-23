@@ -72,7 +72,10 @@ data:
             req = urllib.request.Request(
                 DISCORD_WEBHOOK_URL,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers={
+                "Content-Type": "application/json",
+                "User-Agent": "ToggleMaster-SelfHealing/1.0 (Discord Webhook)",
+                },
                 method="POST"
             )
             urllib.request.urlopen(req, timeout=10)

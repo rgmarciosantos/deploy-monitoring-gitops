@@ -1,5 +1,5 @@
 # PrometheusRule para alertas inteligentes
-# Integra com Alertmanager → OpsGenie → Slack → Self-Healing
+# Integra com Alertmanager → PagerDuty → Discord → Self-Healing
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -71,3 +71,19 @@ spec:
           annotations:
             summary: "Alto uso de memória no pod {{ $labels.pod }}"
             description: "O pod {{ $labels.pod }} está usando {{ $value | printf \"%.0f\" }}% do limite de memória."
+
+        # Alerta: Servico fora do ar (deployment com 0 replicas disponiveis)
+        - alert: ServiceDown
+          expr: |
+            label_replace(
+              kube_deployment_status_replicas_available{namespace=~"togglemaster-.*"} == 0,
+              "service_name", "$1", "deployment", "(.*)"
+            )
+          for: 1m
+          labels:
+            severity: critical
+            team: togglemaster
+            self_healing: "true"
+          annotations:
+            summary: "Servico {{ $labels.service_name }} esta DOWN"
+            description: "O deployment {{ $labels.deployment }} no namespace {{ $labels.namespace }} esta com 0 replicas disponiveis"

@@ -1,8 +1,18 @@
-# deploy-monitoring — ToggleMaster Fase 4
+# 📊 deploy-monitoring — ToggleMaster Observability Stack
 
-Stack de observabilidade completa (Prometheus + Grafana + Loki + OpenTelemetry + New Relic + PagerDuty + Discord + Self-Healing) deployada via **GitOps** com ArgoCD no padrão **App-of-Apps**.
+> **Fase 4 do projeto ToggleMaster** — Stack completa de observabilidade (Metrics + Logs + Traces + Alerting + Self-Healing) deployada via **GitOps** com ArgoCD no padrão **App-of-Apps**.
 
-## Princípio
+[![ArgoCD](https://img.shields.io/badge/ArgoCD-GitOps-EF7B4D?logo=argo&logoColor=white)](https://argoproj.github.io/argo-cd/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-EKS-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![Prometheus](https://img.shields.io/badge/Prometheus-83.4.2-E6522C?logo=prometheus&logoColor=white)](https://prometheus.io/)
+[![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800?logo=grafana&logoColor=white)](https://grafana.com/)
+[![Loki](https://img.shields.io/badge/Loki-2.9.10-F46800?logo=grafana&logoColor=white)](https://grafana.com/oss/loki/)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-0.146.1-425CC7?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
+[![New Relic](https://img.shields.io/badge/New_Relic-APM-008C99?logo=newrelic&logoColor=white)](https://newrelic.com/)
+
+---
+
+## 🎯 Princípio
 
 > **"Se não está no código, não existe."**
 >
@@ -10,22 +20,136 @@ Stack de observabilidade completa (Prometheus + Grafana + Loki + OpenTelemetry +
 
 ---
 
-## Como fazer o deploy (fluxo completo)
+## 🏗️ Arquitetura
 
-### 1) Pré-requisitos (uma vez)
+```
+                        ┌───────────────────────────────────────────────┐
+                        │          ToggleMaster Microservices           │
+                        │  auth │ flag │ targeting │ evaluation │ analytics
+                        └─────────────────────┬─────────────────────────┘
+                                              │ OTLP (4317/4318)
+                                              ▼
+                         ┌──────────────────────────────────────┐
+                         │     OpenTelemetry Collector          │
+                         │     (receivers / processors)         │
+                         └──┬──────────────┬──────────────┬─────┘
+                            │ metrics      │ logs         │ traces
+                            ▼              ▼              ▼
+              ┌─────────────────┐  ┌──────────────┐  ┌──────────────┐
+              │   Prometheus    │  │     Loki     │  │  New Relic   │
+              │   (interno)     │  │   (S3 bkt)   │  │    (SaaS)    │
+              └────────┬────────┘  └──────┬───────┘  └──────────────┘
+                       │                  │
+                       └──────┬───────────┘
+                              ▼
+                       ┌────────────┐
+                       │  Grafana   │  ←  Datasources (Prometheus + Loki)
+                       └────────────┘
+
+                       ┌────────────────┐    ┌─────────────────┐
+                       │ Alertmanager   │───▶│   PagerDuty     │  (incidentes críticos)
+                       │  (rules)       │───▶│    Discord      │  (notificações)
+                       │                │───▶│ Self-Healing    │  (rollout restart)
+                       └────────────────┘    └─────────────────┘
+```
+
+### Pipelines do OTel Collector
+
+| Sinal | Receiver | Backend interno | Backend externo |
+|---|---|---|---|
+| **Metrics** | OTLP | Prometheus (`prometheusremotewrite`) | New Relic |
+| **Logs** | OTLP | Loki (`otlphttp/loki`) | New Relic |
+| **Traces** | OTLP | — | New Relic *(único backend)* |
+
+---
+
+## 📦 Stack
+
+| Componente | Versão | Função |
+|---|---|---|
+| **kube-prometheus-stack** | 83.4.2 | Prometheus + Grafana + Alertmanager + node-exporter + kube-state-metrics |
+| **loki-stack** | 2.10.3 | Loki (storage S3) + Promtail (DaemonSet) |
+| **opentelemetry-collector** | 0.146.1 (`contrib`) | Hub central de observabilidade |
+| **External Secrets Operator** | — | Sincroniza secrets do AWS Secrets Manager |
+| **Self-Healing Webhook** | custom (Python) | Recebe webhook do Alertmanager e roda `kubectl rollout restart` |
+| **PagerDuty** | — | Incident management |
+| **Discord** | — | Notificações de alertas e self-healing |
+| **New Relic** | — | APM externo (traces + correlação de sinais) |
+
+---
+
+## 📁 Estrutura do repositório
+
+```
+deploy-monitoring-gitops/
+│
+├── monitoring-app-of-apps.yaml          # ★ ÚNICO kubectl apply (cria tudo)
+│
+├── apps/                                # Apps do togglemaster-root
+│   ├── 00-monitoring.yaml               #   sync-wave -10 (sobe primeiro)
+│   ├── 10-auth-service.yaml             #   sync-wave 10 (microsserviços)
+│   ├── 10-flag-service.yaml
+│   ├── 10-targeting-service.yaml
+│   ├── 10-evaluation-service.yaml
+│   └── 10-analytics-service.yaml
+│
+├── argocd-apps/                         # 4 Applications filhas do monitoring
+│   ├── 01-kube-prometheus-stack.yaml    # Helm chart upstream
+│   ├── 02-loki-stack.yaml               # Helm chart + S3 backend
+│   ├── 03-otel-collector.yaml           # Helm chart contrib + 3 pipelines
+│   └── 04-monitoring-manifests.yaml     # Aponta para manifests/
+│
+└── manifests/                           # Manifests customizados
+    ├── prometheus/
+    │   └── service-monitors.yaml        # ServiceMonitors dos 5 microsserviços
+    ├── grafana/
+    │   └── dashboard-configmap.yaml     # Dashboard ToggleMaster
+    ├── alerting/
+    │   ├── prometheus-rules.yaml        # 4 alert rules
+    │   └── alertmanager-config.yaml     # Roteamento PagerDuty + Discord + healing
+    ├── self-healing/
+    │   ├── rbac.yaml                    # ServiceAccount + ClusterRole
+    │   └── webhook-receiver.yaml        # Pod Python com kubectl
+    └── external-secrets/
+        ├── secretstore.yaml             # AWS Secrets Manager
+        └── externalsecrets.yaml         # Renderiza secrets do cluster
+```
+
+---
+
+## 🚀 Deploy
+
+### Pré-requisitos (uma vez)
 
 ```bash
-# 1.1 Bucket S3 para o Loki (AWS Academy não permite PVC com EBS)
+# 1) Bucket S3 para o Loki
 aws s3 mb s3://togglemaster-loki-$(aws sts get-caller-identity --query Account --output text) \
   --region us-east-1
 
-# 1.2 Conferir se o ArgoCD está rodando
+# 2) Conferir se o ArgoCD está rodando
 kubectl get pods -n argocd
+
+# 3) Conferir se o External Secrets Operator está instalado
+kubectl get pods -n external-secrets
 ```
 
-> Se sua conta AWS tiver um ID diferente de `637423306132`, edite a linha `s3: s3://us-east-1/togglemaster-loki-637423306132` em `argocd-apps/02-loki-stack.yaml`.
+> ⚠️ Se sua conta AWS tiver um ID diferente de `789754462323`, edite a linha `s3: s3://us-east-1/togglemaster-loki-789754462323` em `argocd-apps/02-loki-stack.yaml`.
 
-### 2) Deploy de toda a stack de observabilidade
+### Secrets necessários no AWS Secrets Manager
+
+Crie o segredo `togglemaster/monitoring` com as seguintes chaves:
+
+```json
+{
+  "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/...",
+  "PAGERDUTY_SERVICE_KEY": "...",
+  "GRAFANA_ADMIN_USER": "admin",
+  "GRAFANA_ADMIN_PASSWORD": "...",
+  "NEW_RELIC_API_KEY": "..."
+}
+```
+
+### Deploy completo
 
 ```bash
 kubectl apply -f monitoring-app-of-apps.yaml
@@ -33,21 +157,23 @@ kubectl apply -f monitoring-app-of-apps.yaml
 
 **É só isso.** O ArgoCD vai:
 
-1. Criar a Application `monitoring-app-of-apps` (pai)
-2. Descobrir os 4 YAMLs em `argocd-apps/` e criar automaticamente:
+1. Criar a Application `togglemaster-root` (raiz)
+2. Descobrir os YAMLs em `apps/` e criar a Application `monitoring-app-of-apps` (sync-wave `-10`)
+3. Esta, por sua vez, descobre os 4 YAMLs em `argocd-apps/` e cria:
    - `kube-prometheus-stack` → Prometheus + Grafana + Alertmanager
    - `loki-stack` → Loki + Promtail
    - `otel-collector` → OpenTelemetry Collector
    - `monitoring-manifests` → dashboards, alertas, self-healing, RBAC
-3. Sincronizar tudo em ~5 minutos
+4. Só depois sobem os microsserviços (sync-wave `10`)
+5. Sincroniza tudo em ~5 minutos
 
-### 3) Acompanhar
+### Acompanhar o sync
 
 ```bash
-# Ver todas as Applications
+# Todas as Applications
 kubectl get application -n argocd
 
-# Ver todos os pods do monitoring
+# Pods de monitoring
 kubectl get pods -n monitoring -w
 ```
 
@@ -55,55 +181,44 @@ Todas devem ficar `Synced` + `Healthy`.
 
 ---
 
-## Estrutura do repositório
+## 🌐 URLs de acesso
 
-```
-deploy-monitoring-gitops/
-├── monitoring-app-of-apps.yaml          # ÚNICO kubectl apply (cria tudo)
-│
-├── argocd-apps/                         # Applications filhas (ArgoCD descobre sozinho)
-│   ├── 01-kube-prometheus-stack.yaml    # Helm chart (v83.4.2)
-│   ├── 02-loki-stack.yaml               # Helm chart (v2.10.2) + S3
-│   ├── 03-otel-collector.yaml           # Helm chart (v0.146.1) + contrib
-│   └── 04-monitoring-manifests.yaml     # Aponta para manifests/
-│
-└── manifests/                           # Manifests customizados (aplicados pela 04)
-    ├── namespace/
-    │   └── namespace.yaml
-    ├── prometheus/
-    │   └── service-monitors.yaml        # ServiceMonitors dos 5 microsserviços
-    ├── grafana/
-    │   └── dashboard-configmap.yaml     # Dashboard ToggleMaster
-    ├── alerting/
-    │   ├── prometheus-rules.yaml        # 4 alert rules
-    │   └── alertmanager-config.yaml     # PagerDuty + Discord + self-healing
-    └── self-healing/
-        ├── rbac.yaml                    # ServiceAccount + ClusterRole
-        └── webhook-receiver.yaml        # Pod que executa kubectl rollout restart
-```
+Os componentes são expostos via Ingress NGINX no host `toggle.pt`:
+
+| Serviço | URL | Credenciais |
+|---|---|---|
+| Grafana | `http://toggle.pt/grafana` | `admin-user` / `admin-password` (Secret `grafana-admin-credentials`) |
+| Prometheus | `http://toggle.pt/prometheus` | — |
+| Alertmanager | `http://toggle.pt/alertmanager` | — |
+
+> Se estiver rodando local, adicione no `/etc/hosts`: `<EKS-LB-IP>  toggle.pt`
 
 ---
 
-## Mudanças em relação ao guia original (PDF)
+## 🔔 Alertas configurados
 
-| Item | Guia original | Aplicado aqui | Motivo |
+| Alerta | Threshold | Severidade | Self-Healing |
 |---|---|---|---|
-| `kube-prometheus-stack` versão | 65.1.0 | **83.4.2** | Mais recente estável |
-| `kube-prometheus-stack` sync | client-side | **ServerSideApply=true** | CRDs > 262 KB não cabem em anotação |
-| `prometheusOperator.admissionWebhooks` | enabled | **disabled** | TLS bad certificate em lab |
-| `opentelemetry-collector` versão | 0.97.1 | **0.146.1** | Mais recente |
-| `opentelemetry-collector` imagem | default (k8s) | **contrib** | `k8s` não tem `prometheusremotewrite` |
-| Exporter de logs no OTel | `loki` | **`otlphttp/loki`** | Exporter `loki` foi removido do contrib |
-| Self-healing image | `bitnami/kubectl:1.29` | **`alpine/k8s:1.29.2`** | bitnami descontinuou a tag 1.29 |
-| Self-healing `initialDelaySeconds` | 5 | **60** | Pod precisa de tempo para subir |
-| Incident management | OpsGenie | **PagerDuty** | OpsGenie descontinuado pela Atlassian |
-| Loki storage | emptyDir | **S3** | Recomendação do professor |
+| `HighErrorRate5xx` | 5xx > 5% por 2 min | critical | ✅ rollout restart |
+| `PodCrashLooping` | restarts > 3 em 15 min | warning | — |
+| `HighLatencyP95` | P95 > 2s por 3 min | warning | — |
+| `HighMemoryUsage` | mem > 85% do limit | warning | — |
+
+### Fluxo de alerta
+
+```
+Prometheus  ──(rule fires)──▶  Alertmanager
+                                    │
+                  ┌─────────────────┼─────────────────┐
+                  ▼                 ▼                 ▼
+              PagerDuty         Discord       Self-Healing webhook
+            (severity=          (notif)         (kubectl rollout
+             critical)                           restart deployment)
+```
 
 ---
 
-## Como fazer mudanças
-
-Qualquer alteração em qualquer arquivo do repo é GitOps-friendly:
+## 🔄 Como fazer mudanças (GitOps workflow)
 
 ```bash
 # Exemplo: adicionar uma nova regra de alerta
@@ -113,25 +228,12 @@ git commit -m "feat: adiciona alerta HighPodRestarts"
 git push origin main
 ```
 
-O ArgoCD detecta a mudança em ~1 minuto e aplica automaticamente. Nada de `kubectl apply` manual.
+O ArgoCD detecta a mudança em ~1 minuto e aplica automaticamente. **Nada de `kubectl apply` manual.**
 
 ---
 
-## Troubleshooting rápido
 
-| Sintoma | Causa provável | Solução |
-|---|---|---|
-| Application `OutOfSync` | Placeholder não substituído no YAML | Edite, `git push`, ArgoCD sincroniza |
-| `metadata.annotations: Too long` | kube-prometheus-stack sem Server-Side Apply | Já está em `syncOptions` |
-| StatefulSet do Prometheus não aparece | Webhook TLS do operator | Já desabilitado no values |
-| OTel pod em CrashLoopBackOff | Imagem errada ou exporter inexistente | Já usa `contrib` + `otlphttp/loki` |
-| Self-healing em CrashLoop | Imagem sem python ou sem kubectl | Já usa `alpine/k8s:1.29.2` |
-| Grafana `MountVolume failed grafana-dashboards` | Ordem de criação (ConfigMap vem da Application 4) | Aguarde 1-2 min, self-heal resolve |
-| Credenciais AWS Academy expiraram | Sessão ~4h | `aws eks update-kubeconfig --name togglemaster-cluster --region us-east-1` |
-
----
-
-## Recriar do zero (reset total)
+## ♻️ Reset total
 
 ```bash
 # Deleta a Application pai (e por causa do finalizer, todas as filhas caem)
@@ -140,3 +242,19 @@ kubectl delete application monitoring-app-of-apps -n argocd
 # Aguarda 1 min e recria
 kubectl apply -f monitoring-app-of-apps.yaml
 ```
+
+---
+
+## 📚 Referências
+
+- [ArgoCD App-of-Apps Pattern](https://argo-cd.readthedocs.io/en/stable/operator-manual/cluster-bootstrapping/)
+- [kube-prometheus-stack Helm Chart](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
+- [Loki S3 storage config](https://grafana.com/docs/loki/latest/configure/storage/)
+- [OpenTelemetry Collector — exporters](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter)
+- [External Secrets Operator](https://external-secrets.io/)
+
+---
+
+## 📄 Licença
+
+Projeto acadêmico — ToggleMaster Fase 4.
